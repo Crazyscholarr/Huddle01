@@ -37,10 +37,12 @@ TOKENROUTER_GEMINI_DEFAULT_MODEL = "google/gemini-3.6-flash"
 INFERX_DEFAULT_BASE_URL = "https://model.inferx.net/endpoints/v1"
 INFERX_DEFAULT_MODEL = "deepseek-v4-flash"
 # NVIDIA NIM (build.nvidia.com): 1 key nvapi-... dùng chung cho MỌI model trong
-# catalog, endpoint chuẩn OpenAI-compatible. GLM-5.2 dịch Trung-Việt tốt nhất
-# trong nhóm endpoint free (đo thử: đúng xưng hô/thuật ngữ hơn hẳn gpt-oss).
+# catalog, endpoint chuẩn OpenAI-compatible. MiniMax M3 là mặc định hiện hành;
+# vẫn cho phép nhập model khác trong GUI mà không cần sửa mã.
 NVIDIA_DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
-NVIDIA_DEFAULT_MODEL = "z-ai/glm-5.2"
+NVIDIA_DEFAULT_MODEL = "minimaxai/minimax-m3"
+ZENMUX_DEFAULT_BASE_URL = "https://zenmux.ai/api/v1"
+ZENMUX_DEFAULT_MODEL = "z-ai/glm-5.3-free"
 
 SYSTEM_INSTRUCTION = (
     "Bạn là chuyên gia lồng tiếng & biên dịch phim chuyên nghiệp. Nhiệm vụ: dịch "
@@ -275,6 +277,11 @@ def _openai_compatible_call(prompt: str, api_key: str, model: str,
         ],
         "temperature": temperature,
     }
+    if str(model or "").strip().lower() == "minimaxai/minimax-m3":
+        # Tham số theo API Reference chính thức của NVIDIA cho MiniMax M3.
+        # Giữ temperature do từng tác vụ truyền vào để bản dịch/JSON ổn định.
+        body["top_p"] = 0.95
+        body["max_tokens"] = 8192
     if stream:
         body["stream"] = True
         body["stream_options"] = {"include_usage": True}
@@ -289,6 +296,7 @@ def _openai_compatible_call(prompt: str, api_key: str, model: str,
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {api_key}",
+                    "Accept": "text/event-stream" if stream else "application/json",
                 },
             )
             with urllib.request.urlopen(req, timeout=max(60, int(timeout or 420))) as resp:
@@ -401,7 +409,8 @@ def _tokenrouter_gemini_call(prompt: str, api_key: str, model: str,
 
 def _api_call(prompt: str, api_key: str, model: str, temperature: float,
               provider: str = "gemini", api_base_url: Optional[str] = None,
-              api_timeout: int = 420) -> str:
+              api_timeout: int = 420,
+              api_retries: Optional[int] = None) -> str:
     provider_key = str(provider or "gemini").lower()
     if provider_key == "tokenrouter":
         return _openai_compatible_call(
@@ -420,8 +429,15 @@ def _api_call(prompt: str, api_key: str, model: str, temperature: float,
         return _openai_compatible_call(
             prompt, api_key, model or NVIDIA_DEFAULT_MODEL,
             temperature, api_base_url or NVIDIA_DEFAULT_BASE_URL,
-            retries=5, timeout=api_timeout, stream=False,
+            retries=(5 if api_retries is None else max(1, int(api_retries))),
+            timeout=api_timeout, stream=False,
             provider_label="NVIDIA", rate_limit_wait=15.0)
+    if provider_key == "zenmux":
+        return _openai_compatible_call(
+            prompt, api_key, model or ZENMUX_DEFAULT_MODEL,
+            temperature, api_base_url or ZENMUX_DEFAULT_BASE_URL,
+            retries=4, timeout=api_timeout, stream=False,
+            provider_label="ZenMux", rate_limit_wait=5.0)
     if provider_key == "tokenrouter_gemini":
         return _tokenrouter_gemini_call(
             prompt, api_key, model or TOKENROUTER_GEMINI_DEFAULT_MODEL,
@@ -461,6 +477,11 @@ def api_params_for_provider(tr: dict, provider: str
                 tr.get("nvidia_model", NVIDIA_DEFAULT_MODEL),
                 tr.get("nvidia_base_url"),
                 int(tr.get("nvidia_timeout", 420) or 420))
+    if p == "zenmux":
+        return (tr.get("zenmux_api_key", ""),
+                tr.get("zenmux_model", ZENMUX_DEFAULT_MODEL),
+                tr.get("zenmux_base_url"),
+                int(tr.get("zenmux_timeout", 420) or 420))
     return (tr.get("gemini_api_key", ""),
             tr.get("gemini_model", "gemini-3.6-flash"), None, 420)
 
@@ -542,6 +563,8 @@ def translate_segments(
             name = "TOKENROUTER_API_KEY"
         elif provider_key == "nvidia":
             name = "NVIDIA API key (nvapi-..., tạo free tại build.nvidia.com)"
+        elif provider_key == "zenmux":
+            name = "ZenMux API key (tạo tại zenmux.ai)"
         else:
             name = "GEMINI_API_KEY"
         raise ValueError(f"Chưa có {name}. Điền key trong GUI/config.yaml hoặc chọn chế độ browser.")
@@ -905,13 +928,19 @@ el => {
 
 def _reply_text(item) -> str:
     """Lấy nội dung câu trả lời, GIỮ ĐƯỢC số thứ tự của danh sách đánh số."""
+    # Với câu trả lời JSON, innerText đã giữ đủ dấu ngoặc/khóa. Bộ dựng lại
+    # <ol> bên dưới vốn dành cho phụ đề sẽ chỉ trả riêng các mục danh sách nếu
+    # Gemini lỡ render một mảng thành <ol>, làm mất toàn bộ phần object JSON.
     try:
-        return (item.evaluate(_JS_EXTRACT) or "").strip()
+        plain = (item.inner_text() or "").strip()
     except Exception:
-        try:
-            return (item.inner_text() or "").strip()
-        except Exception:
-            return ""
+        plain = ""
+    if re.search(r'\{\s*"[^"\n]+"\s*:', plain):
+        return plain
+    try:
+        return (item.evaluate(_JS_EXTRACT) or plain).strip()
+    except Exception:
+        return plain
 
 
 def _wait_reply(page, prev_count: int, timeout: float) -> str:

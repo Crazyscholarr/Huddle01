@@ -380,7 +380,7 @@ Thời gian gần như không đổi vì nút cổ chai vẫn là lọc CPU (`av
 
 Hoặc **`provider: gemini`** — dùng **API key** free tại https://aistudio.google.com/apikey, dán vào `gemini_api_key`. Ổn định nhất nhưng cần key.
 
-Hoặc **`provider: nvidia`** — dùng **NVIDIA NIM** (build.nvidia.com): tạo key `nvapi-...` miễn phí (không cần thẻ), **một key dùng cho mọi model** trong catalog. Mặc định chạy `z-ai/glm-5.2` — đo thử trên thoại phim bộ thì dịch Trung→Việt đúng xưng hô/thuật ngữ hơn hẳn các model gốc Mỹ cùng nhóm free; muốn thử model khác chỉ cần đổi `nvidia_model` (vd `openai/gpt-oss-120b`). Tier free chặn burst request nên chương trình đã đặt sẵn thời gian chờ 429 dài hơn cho provider này.
+Hoặc **`provider: nvidia`** — dùng **NVIDIA NIM** (build.nvidia.com): tạo key `nvapi-...` miễn phí (không cần thẻ), **một key dùng cho mọi model** trong catalog. Mặc định chạy `minimaxai/minimax-m3`; muốn thử model khác chỉ cần đổi `nvidia_model`. Tier free có thể chặn burst request nên chương trình đã đặt sẵn thời gian chờ 429 dài hơn cho provider này.
 
 > Bản dịch được lưu ra `*.vi.srt`. Bạn **sửa tay** file đó rồi chạy lại thì chương trình dùng luôn bản đã sửa (`reuse_existing: true`), chỉ lồng tiếng lại.
 

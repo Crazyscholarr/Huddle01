@@ -12,7 +12,8 @@ import threading
 import time
 from typing import Dict, Optional
 
-from ..utils import log, set_cancel_event
+from ..utils import log, set_cancel_event, set_cancel_event_provider
+from .job_manager import JobManager, current_cancel_event as _job_cancel_event
 
 # autodub/server/state.py -> autodub/server -> autodub -> thư mục gốc dự án
 HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -24,6 +25,30 @@ _NEXT_ID = [1]
 _CANCEL_EVENT = threading.Event()
 _DOWNLOAD_SEM = threading.Semaphore(3)  # giới hạn tải đồng thời
 set_cancel_event(_CANCEL_EVENT)
+JOB_MANAGER = JobManager(os.path.join(HERE, "data", "background_jobs.json"))
+
+
+def current_cancel_event(resource: str = ""):
+    """Cancellation token of this managed job, with legacy fallback."""
+    return _job_cancel_event(_CANCEL_EVENT, resource=resource)
+
+
+set_cancel_event_provider(current_cancel_event)
+
+
+def submit_job(target, *, name: str, resource: str = "default",
+               foreground: bool = True, metadata: Optional[Dict] = None,
+               args=(), kwargs=None) -> str:
+    # A legacy direct thread may have left this fallback event set. Managed
+    # jobs use their own token, so clearing it cannot un-cancel another job.
+    _CANCEL_EVENT.clear()
+    return JOB_MANAGER.submit(
+        target, name=name, resource=resource, foreground=foreground,
+        metadata=metadata, args=args, kwargs=kwargs)
+
+
+def shutdown_background_jobs(wait: bool = True, timeout: float = 12.0) -> bool:
+    return JOB_MANAGER.shutdown(wait=wait, timeout=timeout)
 
 STATE: Dict = {
     "queue": [],          # [{id,name,path,status,progress,note}]
@@ -50,6 +75,9 @@ STATE: Dict = {
         "source_keyword": "", "source_results": [], "source_catalog": [],
         "source_links": [], "source_videos": [], "source_clips": [],
         "source_status": "", "source_done": 0, "source_total": 0,
+        "content_idea_id": "", "content_outline": "", "rewrite_brief": "",
+        "youtube_description": "", "youtube_tags": [], "metadata_path": "",
+        "calendar_path": "",
         "reference_keyword": "", "reference_results": [],
         "reference_status": "", "cut_status": "", "cut_done": 0, "cut_total": 0,
     },
@@ -68,6 +96,21 @@ STATE: Dict = {
         "cut_status": "", "cut_pct": 0.0,
         "cut_done": 0, "cut_total": 0,
         "cut_sources": [], "cut_files": [], "cut_output_dir": "",
+    },
+    "content_pipeline": {
+        "rev": 0, "working": False, "active": "", "status": "Sẵn sàng",
+        "progress": 0.0, "done": 0, "total": 0, "error": "", "warning": "",
+        "activity": [], "current_stage": "", "current_item": "",
+        "started_at": 0.0, "provider_model": "", "provider_offline": False,
+        "ai_success": 0, "ai_failed": 0,
+        "input_path": "", "count": 0, "selected_count": 0,
+        "provider": "auto", "provider_configured": False,
+        "export_xlsx": "", "export_json": "", "output_dir": "",
+        "search_keyword": "", "search_source_keys": [],
+        "search_results": [], "download_success": 0, "download_failed": 0,
+        "download_errors": [], "calendar_path": "",
+        "reload_success": 0, "reload_failed": 0, "reload_errors": [],
+        "deleted_count": 0, "protected_count": 0,
     },
 }
 

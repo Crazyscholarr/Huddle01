@@ -17,6 +17,8 @@ import time
 import uuid
 from typing import Callable, Dict, Optional
 
+from .utils import register_running_process, unregister_running_process
+
 from .server.state import HERE
 
 
@@ -96,7 +98,7 @@ def _append_cta_args(cmd: list, cta: Optional[Dict]) -> None:
 
 def generate(title: str, cfg: Dict, log: Optional[Callable] = None,
              progress: Optional[Callable] = None, cancel_event=None,
-             cta: Optional[Dict] = None) -> Dict:
+             cta: Optional[Dict] = None, rewrite_brief: str = "") -> Dict:
     """Chạy công cụ viết truyện và trả đường dẫn bản chỉ dành cho giọng đọc."""
     title = str(title or "").strip()
     if not title:
@@ -111,6 +113,15 @@ def generate(title: str, cfg: Dict, log: Optional[Callable] = None,
     result_json = os.path.join(result_dir, "result_%s.json" % uuid.uuid4().hex)
     cmd = [settings["python"], "-u", entry, "-t", title,
            "--result-json", result_json]
+    brief_path = ""
+    brief = str(rewrite_brief or "").strip()
+    if brief:
+        brief_path = os.path.join(result_dir, "brief_%s.txt" % uuid.uuid4().hex)
+        with open(brief_path, "w", encoding="utf-8") as handle:
+            # Hồ sơ này do bước phân tích tạo, không chứa toàn văn nguồn. Giới hạn
+            # thêm để không vô tình biến CLI thành đường truyền cả truyện gốc.
+            handle.write(brief[:16000])
+        cmd.extend(["--source-brief-file", brief_path])
     _append_cta_args(cmd, cta)
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
@@ -119,7 +130,10 @@ def generate(title: str, cfg: Dict, log: Optional[Callable] = None,
             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
             bufsize=1, creationflags=creationflags)
     except OSError as exc:
+        if brief_path and os.path.exists(brief_path):
+            os.remove(brief_path)
         raise StoryWriterError("Không khởi động được công cụ tạo kịch bản: %s" % exc) from exc
+    register_running_process(proc, cancel_event=cancel_event, resource="ai")
 
     lines = queue.Queue()
 
@@ -162,6 +176,9 @@ def generate(title: str, cfg: Dict, log: Optional[Callable] = None,
             proc.wait(timeout=5)
         if proc.stdout is not None:
             proc.stdout.close()
+        if brief_path and os.path.exists(brief_path):
+            os.remove(brief_path)
+        unregister_running_process(proc)
 
     if code != 0:
         raise StoryWriterError("Công cụ tạo kịch bản kết thúc với mã lỗi %d." % code)

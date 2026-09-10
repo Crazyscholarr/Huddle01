@@ -16,7 +16,8 @@ from typing import Dict, Optional, Tuple
 from .. import overlays, srt_utils
 from ..srt_utils import Segment
 from ..utils import ffprobe_duration
-from .state import HERE, STATE, _LOCK, _CANCEL_EVENT, _log, _progress, _find
+from .state import (HERE, STATE, _LOCK, current_cancel_event, submit_job,
+                    _log, _progress, _find)
 from .helpers import _safe_path_stem, _doc_file_van_ban
 from .config_api import _load_cfg
 from .projects import (get_project, _active_media_span, _run_stem_for_project,
@@ -28,7 +29,7 @@ JsonResult = Tuple[Dict, int]
 
 
 def _raise_if_cancelled() -> None:
-    if _CANCEL_EVENT.is_set():
+    if current_cancel_event().is_set():
         raise InterruptedError("Đã dừng tác vụ theo yêu cầu.")
 
 
@@ -50,6 +51,82 @@ def _story_output_dir(title: str) -> str:
     """Thư mục sản phẩm video kể chuyện, đặt theo đúng tiêu đề dễ nhận biết."""
     safe_title = _safe_path_stem(title, fallback="video_ke_chuyen", limit=70)
     return os.path.join(HERE, "output", safe_title)
+
+
+def _save_youtube_metadata(video_path: str, payload: Dict) -> str:
+    """Ghi sidecar để tiêu đề/mô tả/tag đi cùng file render cuối."""
+    description = str(payload.get("youtube_description") or "").strip()
+    outline = str(payload.get("content_outline") or "").strip()
+    idea_id = str(payload.get("content_idea_id") or "").strip()
+    raw_tags = payload.get("youtube_tags") or []
+    if isinstance(raw_tags, str):
+        tags = [x.strip() for x in re.split(r"[,;\n]+", raw_tags) if x.strip()]
+    elif isinstance(raw_tags, (list, tuple)):
+        tags = [str(x).strip() for x in raw_tags if str(x).strip()]
+    else:
+        tags = []
+    if not any((description, outline, idea_id, tags)):
+        return ""
+    metadata = {
+        "video_title": str(payload.get("name") or "").strip(),
+        "youtube_description": description,
+        "youtube_tags": tags,
+        "content_outline": outline,
+        "content_idea_id": idea_id,
+        "content_calendar_path": str(payload.get("content_calendar_path") or ""),
+        "video_path": os.path.abspath(video_path),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    target = os.path.splitext(os.path.abspath(video_path))[0] + ".youtube.json"
+    with open(target, "w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, ensure_ascii=False, indent=2)
+    return target
+
+
+def _save_story_deliverables(video_path: str, payload: Dict) -> Tuple[str, str]:
+    """Lưu sidecar YouTube và cập nhật Excel lịch nội dung sau render."""
+    calendar_path = ""
+    try:
+        from ..content_pipeline import ContentStore, append_content_calendar
+
+        if not os.path.isfile(video_path):
+            raise FileNotFoundError("video kết quả chưa tồn tại để ghi lịch")
+
+        cfg = _load_cfg()
+        cp = cfg.get("content_pipeline") if isinstance(
+            cfg.get("content_pipeline"), dict) else {}
+
+        def resolve(value: str, default: str) -> str:
+            raw = os.path.expandvars(str(value or default).strip().strip('"'))
+            return os.path.abspath(raw if os.path.isabs(raw) else os.path.join(HERE, raw))
+
+        database = resolve(cp.get("database", ""), "data/content_ideas.sqlite")
+        output_dir = resolve(cp.get("output_dir", ""), "output/content_plans")
+        calendar_target = resolve(
+            cp.get("calendar_file", ""),
+            os.path.join(output_dir, "lich_noi_dung_goc_mit.xlsx"))
+        idea_id = str(payload.get("content_idea_id") or "").strip()
+        store = ContentStore(database)
+        record = store.get(idea_id) if idea_id else None
+        record = dict(record or {
+            "id": idea_id,
+            "source": "Nhập trực tiếp",
+            "primary_genre": "Chuyện gia đình và tuổi già",
+        })
+        calendar_path = append_content_calendar(
+            record, calendar_target,
+            final_title=str(payload.get("name") or ""), video_path=video_path,
+            target_duration=str(cp.get("target_duration") or "1h00 - 1h30"),
+            status="Đã xuất video")
+        if idea_id and store.get(idea_id):
+            store.patch(idea_id, {"status": "rendered"})
+        _log(f"[Kể chuyện] Đã cập nhật Excel lịch nội dung: {calendar_path}", "ok")
+    except Exception as exc:
+        # Video đã render thành công không được báo lỗi chỉ vì Excel đang mở.
+        _log(f"[Kể chuyện] Chưa cập nhật được Excel lịch nội dung: {exc}", "warn")
+    metadata_payload = dict(payload)
+    metadata_payload["content_calendar_path"] = calendar_path
+    return _save_youtube_metadata(video_path, metadata_payload), calendar_path
 
 
 def _story_tts_workdir(out_dir: str, title: str, stamp: str,
@@ -462,7 +539,7 @@ def _prepare_generated_story_images(result: Dict, payload: Dict,
                 max_retries=int(image_cfg.get("max_retries", 3) or 3),
                 request_gap=float(image_cfg.get("request_gap_seconds", 1.5) or 0),
                 logger=_log, progress=_image_progress,
-                cancel_event=_CANCEL_EVENT)
+                cancel_event=current_cancel_event())
         except Exception as exc:
             _log("Tự tạo ảnh Gemini chưa hoàn tất: %s" % str(exc)[:220], "warn")
             automation_error = str(exc)
@@ -476,8 +553,11 @@ def _prepare_generated_story_images(result: Dict, payload: Dict,
                 pack_path, profile_dir=settings["profile_dir"],
                 channel=settings["channel"], url=settings["url"],
                 timeout=settings["timeout"], max_retries=settings["retries"],
-                request_gap=settings["request_gap"], logger=_log,
-                progress=_image_progress, cancel_event=_CANCEL_EVENT)
+                request_gap=settings["request_gap"],
+                max_session_restarts=settings["session_restarts"],
+                fresh_chat_every=settings["fresh_chat_every"],
+                restart_cooldown=settings["restart_cooldown"], logger=_log,
+                progress=_image_progress, cancel_event=current_cancel_event())
         except Exception as exc:
             automation_error = str(exc)
             _log("Tự tạo ảnh qua Gemini web chưa hoàn tất: %s" %
@@ -716,7 +796,6 @@ def api_manual_tts(b: Dict) -> JsonResult:
         if STATE["running"] or STATE["busy"]:
             return {"error": "Đang bận: " +
                     (STATE["busy"] or "đang xử lý")}, 409
-        _CANCEL_EVENT.clear()
         STATE["cancel"] = False
         STATE["running"] = True
         STATE["busy"] = "Đang tạo audio từ văn bản…"
@@ -773,7 +852,7 @@ def api_manual_tts(b: Dict) -> JsonResult:
                 max_chunk_chars=240,   # đoạn ngắn -> mốc phụ đề mịn hơn
                 utterances=(voice_plan or {}).get("utterances"),
                 **_cta_tts_options(payload),
-                cancel_event=_CANCEL_EVENT,
+                cancel_event=current_cancel_event(),
             )
             cast_path = _save_voice_cast(os.path.splitext(out_path)[0] + ".giong.json",
                                          voice_plan)
@@ -814,7 +893,8 @@ def api_manual_tts(b: Dict) -> JsonResult:
                 STATE["running"] = False
                 STATE["busy"] = ""
 
-    threading.Thread(target=_manual_tts_work, daemon=True).start()
+    submit_job(_manual_tts_work, name="Tạo audio từ văn bản", resource="ai",
+               metadata={"kind": "manual_tts"})
     return {"ok": True, "async": True}, 200
 
 
@@ -841,7 +921,8 @@ def api_nhac_nen_tai(b: Dict) -> JsonResult:
             with _LOCK:
                 STATE["busy"] = ""
 
-    threading.Thread(target=_tai_nhac_work, daemon=True).start()
+    submit_job(_tai_nhac_work, name="Tải nhạc nền", resource="network",
+               metadata={"kind": "music_download"})
     return {"ok": True, "async": True}, 200
 
 
@@ -855,7 +936,6 @@ def api_manual_nhac_nen(b: Dict) -> JsonResult:
         if STATE["running"] or STATE["busy"]:
             return {"error": "Đang bận: " +
                     (STATE["busy"] or "đang xử lý")}, 409
-        _CANCEL_EVENT.clear()
         STATE["cancel"] = False
         STATE["running"] = True
         STATE["busy"] = "Đang trộn nhạc nền…"
@@ -912,7 +992,8 @@ def api_manual_nhac_nen(b: Dict) -> JsonResult:
                 STATE["running"] = False
                 STATE["busy"] = ""
 
-    threading.Thread(target=_nhac_work, daemon=True).start()
+    submit_job(_nhac_work, name="Trộn nhạc nền", resource="ffmpeg",
+               metadata={"kind": "music_mix"})
     return {"ok": True, "async": True}, 200
 
 
@@ -930,7 +1011,6 @@ def api_manual_slideshow(b: Dict) -> JsonResult:
         if STATE["running"] or STATE["busy"]:
             return {"error": "Đang bận: " +
                     (STATE["busy"] or "đang xử lý")}, 409
-        _CANCEL_EVENT.clear()
         STATE["cancel"] = False
         STATE["running"] = True
         render_kind = "video nguồn" if video_sources else "ảnh"
@@ -1026,11 +1106,15 @@ def api_manual_slideshow(b: Dict) -> JsonResult:
                     giu_canh_lap=keep_repeats,
                     progress=lambda pct, detail: _progress(
                         pct=pct, step="Dựng video từ ảnh", detail=detail))
+            metadata_path, calendar_path = _save_story_deliverables(
+                result["path"], payload)
             with _LOCK:
                 manual = STATE["manual"]
                 manual.update({"working": False,
                                "status": "Dựng video hoàn tất",
                                "output_path": result["path"], "error": "",
+                               "metadata_path": metadata_path,
+                               "calendar_path": calendar_path,
                                "rev": int(manual.get("rev", 0)) + 1})
             _progress(pct=100, step="Dựng video xong",
                       detail=os.path.basename(result["path"]))
@@ -1055,7 +1139,8 @@ def api_manual_slideshow(b: Dict) -> JsonResult:
                 STATE["running"] = False
                 STATE["busy"] = ""
 
-    threading.Thread(target=_slideshow_work, daemon=True).start()
+    submit_job(_slideshow_work, name="Dựng video kể chuyện", resource="ffmpeg",
+               metadata={"kind": "story_render"})
     return {"ok": True, "async": True}, 200
 
 
@@ -1167,7 +1252,6 @@ def api_story_cut_sources(b: Dict) -> JsonResult:
     with _LOCK:
         if STATE["running"] or STATE["busy"]:
             return {"error": "Đang bận: " + (STATE["busy"] or "đang xử lý")}, 409
-        _CANCEL_EVENT.clear()
         STATE["cancel"] = False
         STATE["running"] = True
         STATE["busy"] = "Đang cắt video nền thành đoạn nhỏ"
@@ -1217,7 +1301,8 @@ def api_story_cut_sources(b: Dict) -> JsonResult:
                 STATE["running"] = False
                 STATE["busy"] = ""
 
-    threading.Thread(target=_work, daemon=True).start()
+    submit_job(_work, name="Cắt video nguồn", resource="ffmpeg",
+               metadata={"kind": "story_cut_sources"})
     return {"ok": True, "async": True, "total": len(paths)}, 200
 
 
@@ -1234,7 +1319,6 @@ def api_story_download_sources(b: Dict) -> JsonResult:
     with _LOCK:
         if STATE["running"] or STATE["busy"]:
             return {"error": "Đang bận: " + (STATE["busy"] or "đang xử lý")}, 409
-        _CANCEL_EVENT.clear()
         STATE["cancel"] = False
         STATE["running"] = True
         STATE["busy"] = "Đang tải video nền…"
@@ -1303,7 +1387,8 @@ def api_story_download_sources(b: Dict) -> JsonResult:
                 STATE["running"] = False
                 STATE["busy"] = ""
 
-    threading.Thread(target=_work, daemon=True).start()
+    submit_job(_work, name="Tải video nguồn", resource="network",
+               metadata={"kind": "story_download_sources"})
     return {"ok": True, "async": True, "total": len(links)}, 200
 
 
@@ -1350,7 +1435,6 @@ def api_story_resume_images(b: Dict) -> JsonResult:
         if STATE["running"] or STATE["busy"]:
             return {"error": "Đang bận: " +
                     (STATE["busy"] or "đang xử lý")}, 409
-        _CANCEL_EVENT.clear()
         STATE["cancel"] = False
         STATE["running"] = True
         STATE["busy"] = "Đang tiếp tục tạo các ảnh còn thiếu…"
@@ -1437,7 +1521,8 @@ def api_story_resume_images(b: Dict) -> JsonResult:
                     STATE["running"] = False
                     STATE["busy"] = ""
 
-    threading.Thread(target=_work, daemon=True).start()
+    submit_job(_work, name="Tiếp tục tạo ảnh", resource="ai",
+               metadata={"kind": "story_resume_images"})
     return {"ok": True, "async": True,
             "ready_count": int(manifest.get("ready_count", 0) or 0),
             "scene_count": len(scenes)}, 200
@@ -1455,7 +1540,6 @@ def api_story_generate_and_run(b: Dict) -> JsonResult:
     with _LOCK:
         if STATE["running"] or STATE["busy"]:
             return {"error": "Đang bận: " + (STATE["busy"] or "đang xử lý")}, 409
-        _CANCEL_EVENT.clear()
         STATE["cancel"] = False
         STATE["running"] = True
         STATE["busy"] = "Đang tạo kịch bản từ tiêu đề…"
@@ -1471,6 +1555,10 @@ def api_story_generate_and_run(b: Dict) -> JsonResult:
             "image_provider_url": "", "image_scene_count": 0,
             "image_ready_count": 0, "image_prompt_ready": False,
             "image_generation_status": "",
+            "content_idea_id": str(payload.get("content_idea_id") or
+                                   manual.get("content_idea_id") or ""),
+            "rewrite_brief": str(payload.get("rewrite_brief") or
+                                 manual.get("rewrite_brief") or ""),
             "rev": int(manual.get("rev", 0)) + 1,
         })
     _progress(pct=2, step="Tạo kịch bản", detail="Mở công cụ viết truyện")
@@ -1488,7 +1576,8 @@ def api_story_generate_and_run(b: Dict) -> JsonResult:
 
             result = story_writer.generate(
                 source_title, cfg, log=_log, progress=_writer_progress,
-                cancel_event=_CANCEL_EVENT,
+                cancel_event=current_cancel_event(),
+                rewrite_brief=str(payload.get("rewrite_brief") or ""),
                 cta=(payload.get("cta") if isinstance(payload.get("cta"), dict)
                      else None))
             _raise_if_cancelled()
@@ -1506,8 +1595,27 @@ def api_story_generate_and_run(b: Dict) -> JsonResult:
             measured = result.get("meta", {}).get("kiem_tra_tu_dong")
             quality_issues = []
             if isinstance(measured, dict):
-                if not measured.get("within_target", False):
+                # Mốc 12.000 là mục tiêu biên tập, không nên làm mất cả lượt
+                # chạy dài khi file TTS cuối chỉ thiếu vài phần trăm. Dùng số
+                # từ của KICH_BAN_DOC (đã gồm CTA) để quyết định bàn giao;
+                # vẫn chặn bản thiếu đáng kể hoặc vượt trần 16.000 từ.
+                target_min = max(1, int(writer_cfg.get(
+                    "quality_target_min_words", 12000) or 12000))
+                target_max = max(target_min, int(writer_cfg.get(
+                    "quality_target_max_words", 16000) or 16000))
+                min_ratio = max(.80, min(1.0, float(writer_cfg.get(
+                    "quality_min_word_ratio", .95) or .95)))
+                final_words = int(result.get("words") or
+                                  measured.get("total_words") or 0)
+                minimum_handoff = int(round(target_min * min_ratio))
+                word_handoff_ok = minimum_handoff <= final_words <= target_max
+                if not word_handoff_ok:
                     quality_issues.append("tổng số từ ngoài mục tiêu")
+                elif not measured.get("within_target", False):
+                    _log(("Kịch bản đạt %.1f%% mục tiêu từ (%s/%s); sai số nhỏ "
+                          "nên vẫn tiếp tục tạo video.") %
+                         (100.0 * final_words / target_min,
+                          format(final_words, ","), format(target_min, ",")), "warn")
                 if not measured.get("dialogue_target", False):
                     quality_issues.append("tỉ lệ đoạn đối thoại dưới 45%")
                 if measured.get("banned_terms"):
@@ -1621,7 +1729,8 @@ def api_story_generate_and_run(b: Dict) -> JsonResult:
                     STATE["running"] = False
                     STATE["busy"] = ""
 
-    threading.Thread(target=_work, daemon=True).start()
+    submit_job(_work, name="Tạo kịch bản kể chuyện", resource="ai",
+               metadata={"kind": "story_generate"})
     return {"ok": True, "async": True}, 200
 
 
@@ -1652,9 +1761,8 @@ def api_manual_run_all(b: Dict) -> JsonResult:
         if STATE["running"] or STATE["busy"]:
             return {"error": "Đang bận: " +
                     (STATE["busy"] or "đang xử lý")}, 409
-        if b.get("_handoff") and _CANCEL_EVENT.is_set():
+        if b.get("_handoff") and current_cancel_event().is_set():
             return {"error": "Đã dừng tác vụ theo yêu cầu."}, 409
-        _CANCEL_EVENT.clear()
         STATE["cancel"] = False
         STATE["running"] = True
         STATE["busy"] = "Đang làm video kể chuyện…"
@@ -1736,7 +1844,7 @@ def api_manual_run_all(b: Dict) -> JsonResult:
                 max_chunk_chars=240,   # đoạn ngắn -> mốc phụ đề mịn
                 utterances=(voice_plan or {}).get("utterances"),
                 **_cta_tts_options(payload),
-                cancel_event=_CANCEL_EVENT)
+                cancel_event=current_cancel_event())
             _raise_if_cancelled()
             srt_path = os.path.join(out_dir, f"{title}_{stamp}.srt")
             srt_utils.save_srt_file(
@@ -1871,11 +1979,15 @@ def api_manual_run_all(b: Dict) -> JsonResult:
                     progress=lambda pct, detail: _story_progress(
                         pct=50 + pct * 0.5, step="Video kể chuyện",
                         detail="4/4 " + str(detail)))
+            metadata_path, calendar_path = _save_story_deliverables(
+                result["path"], payload)
             with _LOCK:
                 manual = STATE["manual"]
                 manual.update({"working": False,
                                "status": "Video kể chuyện hoàn tất",
                                "output_path": result["path"], "error": "",
+                               "metadata_path": metadata_path,
+                               "calendar_path": calendar_path,
                                "rev": int(manual.get("rev", 0)) + 1})
             _story_progress(pct=100, step="Video kể chuyện xong",
                             detail=os.path.basename(result["path"]))
@@ -1896,7 +2008,8 @@ def api_manual_run_all(b: Dict) -> JsonResult:
                 STATE["running"] = False
                 STATE["busy"] = ""
 
-    threading.Thread(target=_work, daemon=True).start()
+    submit_job(_work, name="Làm video kể chuyện tự động", resource="ffmpeg",
+               metadata={"kind": "story_run_all"})
     return {"ok": True, "async": True}, 200
 
 
@@ -1962,7 +2075,6 @@ def api_manual_mux(b: Dict) -> JsonResult:
         if STATE["running"] or STATE["busy"]:
             return {"error": "Đang bận: " +
                     (STATE["busy"] or "đang xử lý")}, 409
-        _CANCEL_EVENT.clear()
         STATE["cancel"] = False
         STATE["running"] = True
         STATE["busy"] = "Đang ghép audio vào video…"
@@ -2041,5 +2153,6 @@ def api_manual_mux(b: Dict) -> JsonResult:
                 STATE["running"] = False
                 STATE["busy"] = ""
 
-    threading.Thread(target=_manual_mux_work, daemon=True).start()
+    submit_job(_manual_mux_work, name="Ghép audio vào video", resource="ffmpeg",
+               metadata={"kind": "manual_mux"})
     return {"ok": True, "async": True}, 200

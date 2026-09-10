@@ -12,7 +12,6 @@ import mimetypes
 import os
 import re
 import shutil
-import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, Optional
@@ -20,7 +19,8 @@ from typing import Dict, Optional
 from .. import detect
 from ..utils import log, has_nvenc, cancel_running_processes
 from .state import (HERE, UI_DIR, STATE, PROJECTS, REV,
-                    _LOCK, _NEXT_ID, _CANCEL_EVENT, _DOWNLOAD_SEM,
+                    _LOCK, _NEXT_ID, _CANCEL_EVENT, _DOWNLOAD_SEM, JOB_MANAGER,
+                    submit_job, shutdown_background_jobs,
                     bump_rev, _log, _progress, _find)
 from .helpers import _cleanup_temp_files
 from .config_api import (_load_cfg, _translation_cfg_for_gui,
@@ -31,6 +31,7 @@ from .render import render_preview
 from .pipeline import run_pipeline
 from . import manual_api
 from . import video_tools_api
+from . import content_api
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -167,7 +168,19 @@ class Handler(BaseHTTPRequestHandler):
                     "log": STATE["log"][-8:],
                     "manual": dict(STATE.get("manual") or {}),
                     "video_tools": copy.deepcopy(STATE.get("video_tools") or {}),
+                    "content_pipeline": copy.deepcopy(
+                        STATE.get("content_pipeline") or {}),
+                    "background_jobs": JOB_MANAGER.snapshot(active_only=True),
                 })
+
+        if p == "/api/content/list":
+            return self._json(*content_api.api_content_list(q))
+
+        if p == "/api/content/item":
+            return self._json(*content_api.api_content_item(q))
+
+        if p == "/api/content/catalog":
+            return self._json(*content_api.api_content_catalog(q))
 
         if p == "/api/story/generated_script":
             return self._json(*manual_api.api_story_generated_script())
@@ -286,6 +299,39 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"ok": False, "error": str(e)}, 400)
 
+        if p == "/api/content/import":
+            return self._json(*content_api.api_content_import(b))
+
+        if p == "/api/content/sample":
+            return self._json(*content_api.api_content_sample(b))
+
+        if p == "/api/content/search":
+            return self._json(*content_api.api_content_search(b))
+
+        if p == "/api/content/download":
+            return self._json(*content_api.api_content_download(b))
+
+        if p == "/api/content/analyze":
+            return self._json(*content_api.api_content_analyze(b))
+
+        if p == "/api/content/update":
+            return self._json(*content_api.api_content_update(b))
+
+        if p == "/api/content/select":
+            return self._json(*content_api.api_content_select(b))
+
+        if p == "/api/content/delete":
+            return self._json(*content_api.api_content_delete(b))
+
+        if p == "/api/content/reload":
+            return self._json(*content_api.api_content_reload(b))
+
+        if p == "/api/content/export":
+            return self._json(*content_api.api_content_export(b))
+
+        if p == "/api/content/use_story":
+            return self._json(*content_api.api_content_use_story(b))
+
         if p == "/api/config":
             try:
                 tr = b.get("translation") if isinstance(b, dict) else {}
@@ -390,7 +436,14 @@ class Handler(BaseHTTPRequestHandler):
                                 STATE["download_active"] = max(0, STATE.get("download_active", 0) - 1)
                             _DOWNLOAD_SEM.release()
 
-                    threading.Thread(target=_download_worker, daemon=True).start()
+                    background_job_id = submit_job(
+                        _download_worker, name="Tải video vào hàng đợi",
+                        resource="network", metadata={"kind": "queue_download",
+                                                        "queue_id": jid})
+                    with _LOCK:
+                        queued = _find(jid)
+                        if queued:
+                            queued["background_job_id"] = background_job_id
                     return self._json({"ok": True, "id": jid, "async": True})
                 if not path or not os.path.isfile(path):
                     return self._json({"error": f"Không thấy file: {path}"}, 400)
@@ -488,19 +541,33 @@ class Handler(BaseHTTPRequestHandler):
                                 STATE["download_active"] = max(0, STATE.get("download_active", 0) - 1)
                             _DOWNLOAD_SEM.release()
 
-                    threading.Thread(target=_batch_dl, daemon=True).start()
+                    background_job_id = submit_job(
+                        _batch_dl, name="Tải video hàng loạt",
+                        resource="network", metadata={"kind": "queue_download",
+                                                        "queue_id": jid})
+                    with _LOCK:
+                        queued = _find(jid)
+                        if queued:
+                            queued["background_job_id"] = background_job_id
                     results.append({"url": url, "id": jid, "ok": True})
                 except Exception as e:
                     results.append({"url": raw, "error": str(e)})
             return self._json({"ok": True, "results": results})
 
         if p == "/api/queue/remove":
+            background_job_id = ""
             with _LOCK:
                 jid = int(b.get("id", 0))
+                existing = _find(jid)
+                if existing:
+                    background_job_id = str(existing.get("background_job_id") or "")
                 STATE["queue"] = [j for j in STATE["queue"] if j["id"] != jid]
                 PROJECTS.pop(jid, None)
                 if STATE["selected"] == jid:
                     STATE["selected"] = STATE["queue"][0]["id"] if STATE["queue"] else None
+            if background_job_id and JOB_MANAGER.cancel(background_job_id):
+                event = JOB_MANAGER.get_cancel_event(background_job_id)
+                cancel_running_processes(event)
             return self._json({"ok": True})
 
         if p == "/api/queue/select":
@@ -543,13 +610,16 @@ class Handler(BaseHTTPRequestHandler):
                         _save_project_state(pr)
                     bump_rev(job_id)
                     _log(f"Đã dò vùng sub: {r['w']}×{r['h']} tại ({r['x']},{r['y']})", "ok")
+                except InterruptedError:
+                    _log("Đã dừng dò vùng phụ đề cứng.", "warn")
                 except Exception as e:
                     _log(f"Dò sub lỗi: {e}", "err")
                 finally:
                     with _LOCK:
                         STATE["busy"] = ""
 
-            threading.Thread(target=_work, daemon=True).start()
+            submit_job(_work, name="Dò vùng phụ đề cứng", resource="ffmpeg",
+                       metadata={"kind": "detect_hardsub"})
             return self._json({"ok": True, "async": True})
 
         if p == "/api/manual/use_audio":
@@ -620,8 +690,14 @@ class Handler(BaseHTTPRequestHandler):
             steps = b.get("steps") or ["asr", "translate", "tts", "render"]
             if not _find(jid):
                 return self._json({"error": "no job"}, 404)
-            threading.Thread(target=run_pipeline, args=(jid, steps),
-                             daemon=True).start()
+            background_job_id = submit_job(
+                run_pipeline, name="Pipeline lồng tiếng", resource="ffmpeg",
+                metadata={"kind": "dub_pipeline", "queue_id": jid},
+                args=(jid, steps))
+            with _LOCK:
+                queued = _find(jid)
+                if queued:
+                    queued["background_job_id"] = background_job_id
             return self._json({"ok": True})
 
         if p == "/api/prefetch":
@@ -647,7 +723,8 @@ class Handler(BaseHTTPRequestHandler):
                     with _LOCK:
                         STATE["busy"] = ""
 
-            threading.Thread(target=_dl, daemon=True).start()
+            submit_job(_dl, name="Tải model giọng nói", resource="ai",
+                       metadata={"kind": "model_prefetch"})
             return self._json({"ok": True, "async": True})
 
         if p == "/api/cleanup_temp":
@@ -676,11 +753,13 @@ class Handler(BaseHTTPRequestHandler):
                     STATE["busy"] = ""
 
         if p == "/api/cancel":
+            requested_job_id = str(b.get("job_id") or "")
+            selected_id = 0
             with _LOCK:
                 was_running = bool(STATE["running"] or STATE["busy"] or
                                    (STATE.get("manual") or {}).get("working"))
                 STATE["cancel"] = True
-                _CANCEL_EVENT.set()
+                selected_id = int(STATE.get("selected") or 0)
                 manual = STATE.get("manual") or {}
                 if manual.get("working"):
                     manual.update({
@@ -688,8 +767,25 @@ class Handler(BaseHTTPRequestHandler):
                         "error": "",
                         "rev": int(manual.get("rev", 0)) + 1,
                     })
-            cancel_running_processes()
-            return self._json({"ok": True, "active": was_running})
+            cancelled = []
+            if requested_job_id:
+                if JOB_MANAGER.cancel(requested_job_id):
+                    event = JOB_MANAGER.get_cancel_event(requested_job_id)
+                    cancelled = [(requested_job_id, event)]
+            else:
+                cancelled = JOB_MANAGER.cancel_foreground(
+                    "queue_id", selected_id) if selected_id else []
+                if not cancelled:
+                    cancelled = JOB_MANAGER.cancel_foreground()
+            if cancelled:
+                for _job_id, event in cancelled:
+                    cancel_running_processes(event)
+            else:
+                # Compatibility for work started outside JobManager.
+                _CANCEL_EVENT.set()
+                cancel_running_processes()
+            return self._json({"ok": True, "active": was_running or bool(cancelled),
+                               "cancelled_jobs": [item[0] for item in cancelled]})
 
         return self._json({"error": "unknown endpoint"}, 404)
 
@@ -730,3 +826,6 @@ def serve(port: int = 8760, open_browser: bool = True):
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nĐã dừng.")
+    finally:
+        httpd.server_close()
+        shutdown_background_jobs(wait=True, timeout=12.0)

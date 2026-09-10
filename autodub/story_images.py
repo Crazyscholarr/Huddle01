@@ -52,6 +52,12 @@ def gemini_browser_settings(cfg: Dict) -> Dict:
         "retries": max(1, int(image_cfg.get(
             "browser_retries", 2) or 2)),
         "request_gap": max(0.0, float(image_cfg.get("request_gap_seconds", 1.5) or 0)),
+        "session_restarts": max(0, int(image_cfg.get(
+            "browser_session_restarts", 5) or 0)),
+        "fresh_chat_every": max(0, int(image_cfg.get(
+            "browser_fresh_chat_every", 2) or 0)),
+        "restart_cooldown": max(0.0, float(image_cfg.get(
+            "browser_restart_cooldown_seconds", 10) or 0)),
     }
 
 
@@ -411,12 +417,9 @@ class _GeminiWebImageSession:
                 return marker
         return ""
 
-    def recover_after_failure(self, scene_index: int, reason: Exception) -> None:
-        """Dừng lượt Gemini bị kẹt và mở chat sạch trước khi thử lại."""
+    def open_clean_chat(self) -> None:
+        """Dừng lượt cũ và mở chat sạch nhưng giữ nguyên phiên đăng nhập."""
         self._cancelled()
-        self.logger(
-            "Khôi phục Gemini sau lỗi cảnh %03d; mở cuộc trò chuyện mới trước khi thử lại."
-            % int(scene_index), "info")
         try:
             stop = _visible_role(self.page, "button", self._STOP_NAME, timeout=2)
             if stop is not None:
@@ -430,9 +433,15 @@ class _GeminiWebImageSession:
         box = _visible_role(self.page, "textbox", self._INPUT_NAME, timeout=35)
         if box is None:
             raise GeminiBrowserError(
-                "Gemini không phục hồi được ô nhập sau lỗi cảnh %03d (%s)."
-                % (int(scene_index), str(reason)[:100]))
+                "Gemini không phục hồi được ô nhập sau khi mở chat sạch.")
         self._enable_image_mode()
+
+    def recover_after_failure(self, scene_index: int, reason: Exception) -> None:
+        """Dừng lượt Gemini bị kẹt và mở chat sạch trước khi thử lại."""
+        self.logger(
+            "Khôi phục Gemini sau lỗi cảnh %03d; mở cuộc trò chuyện mới trước khi thử lại."
+            % int(scene_index), "info")
+        self.open_clean_chat()
 
     def generate_scene(self, scene_index: int, prompt: str,
                        images_dir: Path, aspect: str,
@@ -447,7 +456,8 @@ class _GeminiWebImageSession:
         request = (
             "Create exactly one image for this story scene. Preserve the same "
             "characters, clothing, locations, cinematic color palette and visual "
-            "style established earlier in this chat. Use aspect ratio %s. No text, "
+            "style. Treat all character details in the scene prompt as canonical, "
+            "including in a fresh chat. Use aspect ratio %s. No text, "
             "caption, logo, watermark or collage.\n\nSCENE %03d:\n%s"
             % ("9:16" if str(aspect) == "9:16" else "16:9",
                int(scene_index), str(prompt or "").strip()))
@@ -638,62 +648,110 @@ def generate_images_gemini_browser(
         path: str | os.PathLike, profile_dir: str,
         channel: str = "msedge", url: str = GEMINI_WEB_URL,
         timeout: float = 240.0, max_retries: int = 3,
-        request_gap: float = 1.5, logger: Optional[Callable] = None,
+        request_gap: float = 1.5, max_session_restarts: int = 5,
+        fresh_chat_every: int = 2, restart_cooldown: float = 10.0,
+        logger: Optional[Callable] = None,
         progress: Optional[Callable] = None, cancel_event=None) -> Dict:
-    """Tự tạo và tải từng cảnh bằng Gemini web, không cần API key."""
+    """Tạo ảnh bằng Gemini web và tự phục hồi trình duyệt khi phiên bị chai.
+
+    Mỗi ảnh được ghi manifest ngay. Sau vài ảnh app chủ động mở chat sạch; nếu
+    một cảnh vẫn lỗi hết số lượt thử, toàn bộ phiên Playwright được đóng/mở lại
+    rồi tiếp tục chính cảnh đó thay vì trả lỗi bắt người dùng khởi động app.
+    """
     logger = logger or (lambda _msg, _kind="info": None)
     progress = progress or (lambda _done, _total, _message="": None)
-    manifest = load_pack(path)
-    scenes = list(manifest.get("scenes") or [])
-    missing = [scene for scene in scenes
-               if scene.get("status") != "ready" and
-               str(scene.get("prompt") or "").strip()]
-    if not missing:
-        if scenes and int(manifest.get("ready_count", 0) or 0) == len(scenes):
-            return manifest
-        raise GeminiBrowserError("Gói ảnh chưa có prompt từng cảnh để tự sinh.")
     retries = max(1, int(max_retries or 1))
-    ready_before = int(manifest.get("ready_count", 0) or 0)
-    total_scenes = len(scenes)
-    with _GeminiWebImageSession(
-            profile_dir, channel, url, timeout, logger,
-            cancel_event=cancel_event) as session:
-        for done, scene in enumerate(missing, 1):
-            index = int(scene.get("index") or done)
-            last_error = None
-            for attempt in range(1, retries + 1):
-                try:
-                    downloaded = session.generate_scene(
-                        index, str(scene.get("prompt") or ""),
-                        Path(manifest["pack_dir"]) / "images",
-                        str(manifest.get("aspect") or "16:9"),
-                        heartbeat=lambda message, completed=done - 1: progress(
-                            ready_before + completed, total_scenes, message))
-                    manifest = _register_generated_scene_file(
-                        path, index, downloaded)
-                    message = ("Đã tải cảnh %03d · tổng %d/%d"
-                               % (index, ready_before + done, total_scenes))
-                    progress(ready_before + done, total_scenes, message)
-                    logger("Đã tạo và tải ảnh cảnh %03d bằng Gemini web." % index,
-                           "ok")
+    allowed_restarts = max(0, int(max_session_restarts or 0))
+    fresh_every = max(0, int(fresh_chat_every or 0))
+    restart_count = 0
+
+    def cancelable_wait(seconds: float) -> None:
+        deadline = time.monotonic() + max(0.0, float(seconds))
+        while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Đã huỷ tạo ảnh.")
+            time.sleep(min(.25, deadline - time.monotonic()))
+
+    while True:
+        manifest = load_pack(path)
+        scenes = list(manifest.get("scenes") or [])
+        missing = [scene for scene in scenes
+                   if scene.get("status") != "ready" and
+                   str(scene.get("prompt") or "").strip()]
+        if not missing:
+            if scenes and int(manifest.get("ready_count", 0) or 0) == len(scenes):
+                return manifest
+            raise GeminiBrowserError("Gói ảnh chưa có prompt từng cảnh để tự sinh.")
+        total_scenes = len(scenes)
+        try:
+            with _GeminiWebImageSession(
+                    profile_dir, channel, url, timeout, logger,
+                    cancel_event=cancel_event) as session:
+                made_in_chat = 0
+                for scene in missing:
+                    index = int(scene.get("index") or 1)
+                    if fresh_every and made_in_chat >= fresh_every:
+                        refresh = getattr(session, "open_clean_chat", None)
+                        if callable(refresh):
+                            logger("Đã tạo %d ảnh; chủ động mở chat Gemini sạch để tránh phiên bị chai."
+                                   % made_in_chat, "info")
+                            refresh()
+                        made_in_chat = 0
                     last_error = None
-                    break
-                except InterruptedError:
-                    raise
-                except Exception as exc:
-                    last_error = exc
-                    logger("Cảnh %03d lỗi lượt %d/%d: %s" %
-                           (index, attempt, retries, str(exc)[:180]), "warn")
-                    if attempt < retries:
-                        recover = getattr(session, "recover_after_failure", None)
-                        if callable(recover):
-                            recover(index, exc)
-                        session._sleep(min(12.0, 2.5 * attempt))
-            if last_error is not None:
-                raise GeminiBrowserError(str(last_error)) from last_error
-            if done < len(missing) and request_gap > 0:
-                session._sleep(request_gap)
-    return load_pack(path)
+                    for attempt in range(1, retries + 1):
+                        try:
+                            ready_now = int(manifest.get("ready_count", 0) or 0)
+                            downloaded = session.generate_scene(
+                                index, str(scene.get("prompt") or ""),
+                                Path(manifest["pack_dir"]) / "images",
+                                str(manifest.get("aspect") or "16:9"),
+                                heartbeat=lambda message, completed=ready_now: progress(
+                                    completed, total_scenes, message))
+                            manifest = _register_generated_scene_file(
+                                path, index, downloaded)
+                            ready_now = int(manifest.get("ready_count", 0) or 0)
+                            message = ("Đã tải cảnh %03d · tổng %d/%d"
+                                       % (index, ready_now, total_scenes))
+                            progress(ready_now, total_scenes, message)
+                            logger("Đã tạo và tải ảnh cảnh %03d bằng Gemini web." % index,
+                                   "ok")
+                            last_error = None
+                            made_in_chat += 1
+                            break
+                        except InterruptedError:
+                            raise
+                        except Exception as exc:
+                            last_error = exc
+                            logger("Cảnh %03d lỗi lượt %d/%d: %s" %
+                                   (index, attempt, retries, str(exc)[:180]), "warn")
+                            if attempt < retries:
+                                recover = getattr(session, "recover_after_failure", None)
+                                if callable(recover):
+                                    recover(index, exc)
+                                session._sleep(min(12.0, 2.5 * attempt))
+                    if last_error is not None:
+                        raise GeminiBrowserError(str(last_error)) from last_error
+                    if request_gap > 0:
+                        session._sleep(request_gap)
+            return load_pack(path)
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            if restart_count >= allowed_restarts:
+                raise GeminiBrowserError(
+                    "Gemini vẫn lỗi sau %d lần tự khởi động lại: %s" %
+                    (restart_count, str(exc))) from exc
+            restart_count += 1
+            delay = min(45.0, max(0.0, float(restart_cooldown)) * restart_count)
+            current = load_pack(path)
+            ready_now = int(current.get("ready_count", 0) or 0)
+            message = ("Gemini bị kẹt; app tự mở lại phiên %d/%d sau %.0f giây "
+                       "và tiếp tục từ %d/%d ảnh…" %
+                       (restart_count, allowed_restarts, delay,
+                        ready_now, total_scenes))
+            logger(message, "warn")
+            progress(ready_now, total_scenes, message)
+            cancelable_wait(delay)
 
 
 def generate_images_gemini(path: str | os.PathLike, api_key: str,

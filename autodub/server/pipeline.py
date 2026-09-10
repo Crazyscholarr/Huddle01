@@ -12,7 +12,7 @@ from typing import Dict, List
 from .. import srt_utils, overlays, speechmap
 from ..srt_utils import Segment
 from ..utils import start_file_log
-from .state import (HERE, STATE, _LOCK, _CANCEL_EVENT,
+from .state import (HERE, STATE, _LOCK, current_cancel_event,
                     bump_rev, _log, _progress, _find)
 from .helpers import _call_filtered, _find_existing_dub_audio, _fmt_span_time
 from .config_api import _load_cfg, _translation_api_params
@@ -226,7 +226,6 @@ def run_pipeline(job_id: int, steps: List[str]):
         with _LOCK:
             STATE["running"] = True
             STATE["cancel"] = False
-            _CANCEL_EVENT.clear()
             job["status"] = "dang chay"
 
         # ---------------- 1. ASR ----------------
@@ -267,7 +266,7 @@ def run_pipeline(job_id: int, steps: List[str]):
                                                "trim_start": span["start"] if span.get("enabled") else 0.0,
                                                "trim_duration": effective_duration if span.get("enabled") else None,
                                            })
-                if STATE["cancel"]:
+                if current_cancel_event().is_set():
                     raise InterruptedError
                 _log(f"Nhận dạng (backend={a.get('backend','paraformer')})...", "step")
                 # Chỉ truyền những tham số mà transcribe() THẬT SỰ nhận. asr.py có

@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from typing import Dict, Optional
 
-from .utils import log, ffprobe_duration, ffprobe_video_size, _NO_WINDOW
+from .utils import (log, ffprobe_duration, ffprobe_video_size, _NO_WINDOW,
+                    active_cancel_event, register_running_process,
+                    unregister_running_process)
 from .overlays import suggest_subtitle_band
 
 
@@ -46,13 +49,37 @@ def _grab_gray_frames(video: str, n: int, width: int, height: int,
                "-i", video, "-frames:v", "1",
                "-vf", f"scale={width}:{height},format=gray",
                "-f", "rawvideo", "-"]
+        token = active_cancel_event("ffmpeg")
+        proc = None
         try:
-            p = subprocess.run(cmd, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               timeout=30, creationflags=_NO_WINDOW)
+            proc = subprocess.Popen(
+                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, creationflags=_NO_WINDOW)
+            register_running_process(proc, cancel_event=token, resource="ffmpeg")
+            deadline = time.monotonic() + 30.0
+            while True:
+                if token is not None and token.is_set():
+                    proc.terminate()
+                    raise InterruptedError("Đã hủy dò phụ đề cứng.")
+                try:
+                    stdout, _stderr = proc.communicate(timeout=.25)
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() >= deadline:
+                        proc.kill()
+                        return i, None
+            if token is not None and token.is_set():
+                raise InterruptedError("Đã hủy dò phụ đề cứng.")
+            if proc.returncode != 0:
+                return i, None
+        except InterruptedError:
+            raise
         except Exception:
             return i, None
-        buf = p.stdout or b""
+        finally:
+            if proc is not None:
+                unregister_running_process(proc)
+        buf = stdout or b""
         if len(buf) < width * height:
             return i, None
         arr = np.frombuffer(buf[:width * height], dtype=np.uint8)

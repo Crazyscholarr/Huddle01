@@ -39,6 +39,10 @@ _TRANSLATION_GUI_KEYS = (
     "nvidia_base_url",
     "nvidia_model",
     "nvidia_timeout",
+    "zenmux_api_key",
+    "zenmux_base_url",
+    "zenmux_model",
+    "zenmux_timeout",
     "male_lead_name",
     "female_lead_name",
     "chunk_size",
@@ -73,8 +77,13 @@ def _translation_cfg_for_gui() -> Dict:
         "nvidia_api_key": tr.get("nvidia_api_key", ""),
         "nvidia_base_url": tr.get("nvidia_base_url",
                                   "https://integrate.api.nvidia.com/v1"),
-        "nvidia_model": tr.get("nvidia_model", "z-ai/glm-5.2"),
+        "nvidia_model": tr.get("nvidia_model", "minimaxai/minimax-m3"),
         "nvidia_timeout": tr.get("nvidia_timeout", 420),
+        "zenmux_api_key": tr.get("zenmux_api_key", ""),
+        "zenmux_base_url": tr.get("zenmux_base_url",
+                                  "https://zenmux.ai/api/v1"),
+        "zenmux_model": tr.get("zenmux_model", "z-ai/glm-5.3-free"),
+        "zenmux_timeout": tr.get("zenmux_timeout", 420),
         "male_lead_name": tr.get("male_lead_name", ""),
         "female_lead_name": tr.get("female_lead_name", ""),
         "chunk_size": tr.get("chunk_size", 80),
@@ -110,9 +119,10 @@ def _save_translation_cfg(updates: Dict) -> Dict:
     clean = {k: updates[k] for k in _TRANSLATION_GUI_KEYS if k in updates}
     provider = str(clean.get("provider", "") or "").lower()
     if provider and provider not in {"browser", "gemini", "tokenrouter",
-                                     "tokenrouter_gemini", "inferx", "nvidia"}:
+                                     "tokenrouter_gemini", "inferx", "nvidia",
+                                     "zenmux"}:
         raise ValueError("provider must be browser, gemini, tokenrouter, "
-                         "tokenrouter_gemini, inferx, or nvidia")
+                         "tokenrouter_gemini, inferx, nvidia, or zenmux")
     if "chunk_size" in clean:
         clean["chunk_size"] = max(1, int(float(clean["chunk_size"] or 80)))
     if "chars_per_sec" in clean:
@@ -126,6 +136,8 @@ def _save_translation_cfg(updates: Dict) -> Dict:
         clean["inferx_timeout"] = max(60, int(float(clean["inferx_timeout"] or 420)))
     if "nvidia_timeout" in clean:
         clean["nvidia_timeout"] = max(60, int(float(clean["nvidia_timeout"] or 420)))
+    if "zenmux_timeout" in clean:
+        clean["zenmux_timeout"] = max(60, int(float(clean["zenmux_timeout"] or 420)))
 
     with open(CONFIG_PATH, "r", encoding="utf-8", newline="") as f:
         lines = f.readlines()
@@ -187,12 +199,16 @@ def _test_translation_api(overrides: Optional[Dict] = None) -> Dict:
         return {"ok": True, "provider": provider,
                 "message": "browser mode khong dung API key"}
     if provider not in {"gemini", "tokenrouter", "tokenrouter_gemini",
-                        "inferx", "nvidia"}:
+                        "inferx", "nvidia", "zenmux"}:
         raise ValueError("provider khong hop le")
 
     api_key, model, base_url, timeout = _translation_api_params(cfg_tr, provider)
     if not api_key:
-        raise ValueError("Chua dien API key cho provider dang chon")
+        if provider == "nvidia":
+            raise ValueError(
+                "Chưa lưu NVIDIA API key. Mở Cài đặt > API, dán key nvapi-... "
+                "mới rồi bấm Kiểm tra kết nối API.")
+        raise ValueError("Chưa điền API key cho provider đang chọn")
     raw = tr_mod._api_call(
         'Return exactly this JSON array and nothing else: ["ok"]',
         api_key, model, 0.1, provider, base_url, min(timeout, 180))

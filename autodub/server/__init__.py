@@ -30,6 +30,8 @@ Mọi cách import cũ vẫn chạy nguyên: `from autodub import server; server
 """
 from .state import (HERE, UI_DIR, CONFIG_PATH, STATE, PROJECTS, REV,
                     _LOCK, _NEXT_ID, _CANCEL_EVENT,
+                    JOB_MANAGER, current_cancel_event, submit_job,
+                    shutdown_background_jobs,
                     bump_rev, _log, _progress, _find)
 from .helpers import (_safe_path_stem, _output_stem_for_video,
                       _output_dir_for_video, _doc_file_van_ban,

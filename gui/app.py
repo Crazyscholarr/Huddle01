@@ -27,6 +27,8 @@ VIDEO_TYPES = ("Video (*.mp4;*.mkv;*.mov;*.avi;*.ts;*.webm;*.flv;*.m4v)",
 IMAGE_TYPES = ("Ảnh (*.png;*.jpg;*.jpeg;*.webp)", "Tất cả file (*.*)")
 AUDIO_TYPES = ("Âm thanh (*.mp3;*.wav;*.m4a;*.aac;*.flac;*.ogg;*.opus)",
                "Tất cả file (*.*)")
+DATA_TYPES = ("Kho truyện (*.json;*.sqlite;*.sqlite3;*.db)",
+              "Tất cả file (*.*)")
 
 
 TEXT_TYPES = ("Text (*.txt;*.md)", "All files (*.*)")
@@ -268,6 +270,14 @@ class Api:
         except Exception as e:
             return {"error": str(e)}
 
+    def pick_story_data(self):
+        """Chọn kho truyện JSON/SQLite; chỉ trả đường dẫn, không nạp qua JS."""
+        try:
+            r = _open_dialog("file", False, DATA_TYPES)
+            return r[0] if r else ""
+        except Exception as e:
+            return {"error": str(e)}
+
     def pick_folder(self):
         try:
             r = _open_dialog("folder", False, None)
@@ -376,7 +386,7 @@ def main() -> int:
 
     # Hiển thị nguồn chạy ngay khi khởi động để không nhầm shortcut/bản copy
     # cũ (đặc biệt khi đã có nhiều thư mục AutoDubVN trên máy).
-    log(f"Build story-random-resume 2026-08-21.3 · nguồn: {ROOT}", "dim")
+    log(f"Build content-planner 2026-08-21.6 · nguồn: {ROOT}", "dim")
     log(f"Python runtime: {sys.executable}", "dim")
 
     port = _free_port()
@@ -424,6 +434,10 @@ def main() -> int:
             "https://developer.microsoft.com/microsoft-edge/webview2/", "warn")
         input("\nBấm ENTER để đóng...")
         return 1
+    finally:
+        # Báo hủy từng job và chờ có giới hạn. Worker còn kẹt trong thư viện
+        # bên thứ ba là daemon nên không giữ tiến trình sống vô hạn.
+        server.shutdown_background_jobs(wait=True, timeout=12.0)
     return 0
 
 

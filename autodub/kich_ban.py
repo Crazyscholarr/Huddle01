@@ -232,6 +232,9 @@ làm ảnh minh hoạ chạy suốt video. Yêu cầu:
 - Mỗi mô tả phải là MỘT khung hình tĩnh có thể chụp được: nêu rõ chỗ nào, lúc
   nào (sáng/trưa/chiều/đêm), ai đang làm gì, và ít nhất một vật thể lấy từ mục 9
   của bản thiết kế.
+- Mỗi mô tả phải TỰ ĐỦ NGHĨA khi đưa sang một cuộc chat mới: hễ nhân vật xuất
+  hiện thì lặp lại tuổi, khuôn mặt, tóc và trang phục nhận dạng cố định của họ;
+  không viết kiểu "same person/character as before".
 - Cỡ cảnh: chỉ dùng toàn cảnh, trung cảnh hoặc cảnh qua vai. KHÔNG cận mặt.
   Người trong ảnh nhìn từ xa hoặc nhìn nghiêng, không nhìn thẳng ống kính.
 - Kết thúc MỖI mô tả bằng đúng chuỗi này, không đổi chữ nào:

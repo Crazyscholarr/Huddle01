@@ -26,6 +26,7 @@
   <div id="modesw">
     <button id="mDub" class="on" onclick="setMode('dub')"><span>▦</span> Lồng tiếng video</button>
     <button id="mStory" onclick="setMode('story')"><span>▤</span> Video kể chuyện <em>AI Story</em></button>
+    <button id="mIdeas" onclick="setMode('ideas')"><span>◆</span> Kho ý tưởng <em>AI Plan</em></button>
     <button id="mVideoTools" onclick="setMode('tools')"><span>✂</span> Công cụ Video <em>Phụ trợ</em></button>
   </div>
   <div class="spacer"></div>
@@ -195,6 +196,103 @@
       <button id="vtTabCut" onclick="setVideoToolsTab('cut')">✂ Cắt video hàng loạt</button>
     </nav>
     <main id="videoToolsBody" class="vt-body"></main>
+  </div>
+</div>
+
+<!-- ============ CHẾ ĐỘ 4: KHO Ý TƯỞNG & KẾ HOẠCH ============ -->
+<div id="ideasMain" style="display:none">
+  <div class="idea-shell">
+    <header class="idea-head">
+      <div class="idea-symbol">◆</div>
+      <div><h2>Kho ý tưởng &amp; Kế hoạch YouTube</h2>
+        <p>Tìm và tải chuyện thật, phân tích đa tầng, duyệt thủ công rồi chuyển thẳng sang AI Story.</p></div>
+      <span class="idea-safe">TỰ LƯU SQLITE</span>
+    </header>
+    <nav class="idea-tabs">
+      <button id="ideaTabCollect" onclick="setIdeasTab('collect')">⌕ Tìm &amp; tải nội dung</button>
+      <button id="ideaTabLibrary" onclick="setIdeasTab('library')">▤ Kho đã tải &amp; phân tích <b id="ideaLibraryBadge">0</b></button>
+    </nav>
+    <div id="ideaStatus"></div>
+    <div id="ideaCollectView" class="idea-collect-view">
+      <aside class="idea-collect-form">
+        <section class="idea-source-box">
+          <div class="idea-box-title"><span>1</span><div><b>Tìm chuyện theo từ khóa</b><small>Kết quả thật từ website, không chèn dữ liệu mẫu.</small></div></div>
+          <label>Từ khóa Trung gợi ý</label>
+          <select id="ideaKeywordPreset" class="inp" onchange="ideasChooseKeyword(this.value)">
+            <option value="">— Chọn chủ đề hoặc tự gõ bên dưới —</option>
+          </select>
+          <label>Từ khóa tìm kiếm</label>
+          <input id="ideaOnlineKeyword" class="inp" placeholder="婆媳矛盾 故事" oninput="IDEAS.onlineKeyword=this.value">
+          <div id="ideaKeywordInfo" class="idea-keyword-info">Chọn một từ khóa để xem nghĩa và nhóm chủ đề.</div>
+          <div class="idea-collect-grid">
+            <div><label>Nguồn tìm</label><select id="ideaSourceGroup" class="inp" onchange="IDEAS.sourceGroup=this.value">
+              <option value="zhihu">Zhihu · truyện Trung (ưu tiên)</option>
+              <option value="chinese_real">Trung · tâm sự/người thật</option>
+              <option value="chinese_literary">Trung · văn học gia đình</option>
+              <option value="chinese_serial">Trung · truyện dài nhiều tập</option>
+              <option value="vietnam">Nguồn Việt Nam</option>
+              <option value="reddit">Reddit AITA</option>
+              <option value="chinese">Tất cả nguồn Trung phù hợp</option>
+              <option value="chinese_folklore">Trung · dân gian/kinh dị</option>
+              <option value="spiritual">Tâm linh · ông bà kể</option>
+              <option value="all">Tất cả nguồn phù hợp</option>
+            </select></div>
+            <div><label>Số kết quả</label><input id="ideaSearchLimit" class="inp" type="number" min="1" max="50" value="20"></div>
+          </div>
+          <button class="btn pri idea-main-action" onclick="ideasSearchSources()">⌕ TÌM NGUỒN NỘI DUNG</button>
+        </section>
+        <section class="idea-source-box compact">
+          <div class="idea-box-title"><span>2</span><div><b>Hoặc tải từ link cụ thể</b><small>Mỗi dòng một link nền tảng Trung, Reddit hoặc bài báo.</small></div></div>
+          <textarea id="ideaSourceUrls" class="inp" placeholder="https://www.zhihu.com/question/...&#10;https://www.qimao.com/shuku/..."></textarea>
+          <details class="idea-cookie-details"><summary>Cookie website nếu bài yêu cầu đăng nhập</summary>
+            <input id="ideaZhihuCookie" class="inp" type="password" autocomplete="off"
+              placeholder="Cookie chỉ dùng cho lượt tải này, không lưu cấu hình">
+          </details>
+          <button class="btn" onclick="ideasDownloadUrls()">⇩ Tải các link vào kho</button>
+        </section>
+        <p class="idea-copyright-note">Chỉ lấy tình huống làm tài liệu tham khảo. Phải đổi tên, bối cảnh và viết lại hoàn toàn; không đọc nguyên văn nguồn.</p>
+      </aside>
+      <main class="idea-source-results">
+        <header><div><h3>Kết quả tìm nguồn</h3><p id="ideaResultSummary">Chọn từ khóa và bấm Tìm nguồn nội dung.</p></div>
+          <div class="idea-result-actions"><button class="btn sm" onclick="ideasToggleAllSources(true)">Chọn tất cả</button>
+            <button class="btn sm" onclick="ideasToggleAllSources(false)">Bỏ chọn</button>
+            <button class="btn pri" onclick="ideasDownloadSelected()">⇩ Tải mục đã chọn vào kho</button></div></header>
+        <div id="ideaSourceResults" class="idea-source-list"></div>
+      </main>
+    </div>
+    <div id="ideaLibraryView" class="idea-library-view" style="display:none">
+      <div class="idea-toolbar">
+        <button class="btn pri" onclick="ideasImport()">＋ Nhập JSON / SQLite</button>
+        <button class="btn" onclick="ideasSample()">Dữ liệu mẫu kiểm thử</button>
+        <button class="btn" onclick="ideasSetVisibleSelection(true)">☑ Chọn mục đang lọc</button>
+        <button class="btn" onclick="ideasSetVisibleSelection(false)">☐ Bỏ chọn</button>
+        <select id="ideaProvider" class="inp" onchange="IDEAS.provider=this.value">
+          <option value="browser">Gemini Web · local, không API</option>
+          <option value="perplexity_browser">Claude · Perplexity Web, không API</option>
+          <option value="heuristic">Quy tắc local · không mở AI</option>
+        </select>
+        <select id="ideaUsageFilter" class="inp idea-usage-filter" onchange="ideasSetUsageFilter(this.value)">
+          <option value="unused">Chưa dùng · chống lặp</option>
+          <option value="used">Lịch sử đã dùng</option>
+          <option value="all">Tất cả nội dung</option>
+        </select>
+        <button class="btn" onclick="ideasAnalyze(false)">✦ Phân tích đã chọn</button>
+        <button class="btn" onclick="ideasAnalyze(true)">✦ Phân tích tất cả</button>
+        <button class="btn" onclick="ideasReloadSelected()">↻ Tải lại &amp; phân tích</button>
+        <button class="btn danger" onclick="ideasDeleteSelected()">🗑 Xóa đã chọn</button>
+        <span class="spacer"></span>
+        <button class="btn" onclick="ideasExport(false)">⇩ Xuất mục đã chọn</button>
+        <button class="btn" onclick="ideasExport(true)">⇩ Xuất toàn bộ</button>
+      </div>
+      <div class="idea-workspace">
+        <aside class="idea-list-pane">
+          <div class="idea-search"><input id="ideaSearch" placeholder="Lọc trong kho đã tải…"
+            oninput="ideasSearch(this.value)"><button id="ideaClearSearch" onclick="ideasClearSearch()" title="Xóa bộ lọc">×</button><b id="ideaCount">0 mục</b></div>
+          <div id="ideaList" class="idea-list"></div>
+        </aside>
+        <main id="ideaDetail" class="idea-detail"></main>
+      </div>
+    </div>
   </div>
 </div>
 

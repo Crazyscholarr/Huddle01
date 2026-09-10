@@ -1,0 +1,215 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "id": "666a3450a9ac434f",
+      "name": "Tìm nguồn nội dung",
+      "resource": "network",
+      "foreground": false,
+      "metadata": {
+        "kind": "content_search"
+      },
+      "status": "completed",
+      "submitted_at": 1789009228.5828414,
+      "started_at": 1789009228.5843458,
+      "finished_at": 1789009261.031698,
+      "error": ""
+    },
+    {
+      "id": "d2c06353c2a54afe",
+      "name": "Tải và phân tích nội dung",
+      "resource": "ai",
+      "foreground": false,
+      "metadata": {
+        "kind": "content_download"
+      },
+      "status": "completed",
+      "submitted_at": 1789009295.1572032,
+      "started_at": 1789009295.1591988,
+      "finished_at": 1789009328.3110323,
+      "error": ""
+    },
+    {
+      "id": "f04390b27d8b4afd",
+      "name": "Tạo kịch bản kể chuyện",
+      "resource": "ai",
+      "foreground": true,
+      "metadata": {
+        "kind": "story_generate"
+      },
+      "status": "completed",
+      "submitted_at": 1789009363.7794075,
+      "started_at": 1789009363.7794075,
+      "finished_at": 1789013198.703326,
+      "error": ""
+    },
+    {
+      "id": "163c86e3d3014448",
+      "name": "Tìm nguồn nội dung",
+      "resource": "network",
+      "foreground": false,
+      "metadata": {
+        "kind": "content_search"
+      },
+      "status": "completed",
+      "submitted_at": 1789009498.1342394,
+      "started_at": 1789009498.1342394,
+      "finished_at": 1789009532.7359903,
+      "error": ""
+    },
+    {
+      "id": "30376cbbb8364da6",
+      "name": "Tải và phân tích nội dung",
+      "resource": "ai",
+      "foreground": false,
+      "metadata": {
+        "kind": "content_download"
+      },
+      "status": "completed",
+      "submitted_at": 1789009571.230091,
+      "started_at": 1789009571.230091,
+      "finished_at": 1789009591.4601977,
+      "error": ""
+    },
+    {
+      "id": "5761483895ca4f85",
+      "name": "Tạo kịch bản kể chuyện",
+      "resource": "ai",
+      "foreground": true,
+      "metadata": {
+        "kind": "story_generate"
+      },
+      "status": "completed",
+      "submitted_at": 1789013494.1979694,
+      "started_at": 1789013494.1989768,
+      "finished_at": 1789016625.4901655,
+      "error": ""
+    },
+    {
+      "id": "acb3c1d7a8014fb8",
+      "name": "Tạo kịch bản kể chuyện",
+      "resource": "ai",
+      "foreground": true,
+      "metadata": {
+        "kind": "story_generate"
+      },
+      "status": "interrupted",
+      "submitted_at": 1789017983.4936373,
+      "started_at": 1789017983.4936373,
+      "finished_at": 1789018201.5594158,
+      "error": "Ứng dụng đã đóng trước khi tác vụ hoàn tất."
+    },
+    {
+      "id": "57dfc1f7f1b549fa",
+      "name": "Tìm nguồn nội dung",
+      "resource": "network",
+      "foreground": false,
+      "metadata": {
+        "kind": "content_search"
+      },
+      "status": "completed",
+      "submitted_at": 1789020513.2609956,
+      "started_at": 1789020513.2619958,
+      "finished_at": 1789020544.71341,
+      "error": ""
+    },
+    {
+      "id": "a0151c2be75e4386",
+      "name": "Tải và phân tích nội dung",
+      "resource": "ai",
+      "foreground": false,
+      "metadata": {
+        "kind": "content_download"
+      },
+      "status": "completed",
+      "submitted_at": 1789020626.5268521,
+      "started_at": 1789020626.528849,
+      "finished_at": 1789020683.6340096,
+      "error": ""
+    },
+    {
+      "id": "3917440de2fc41c9",
+      "name": "Tải và phân tích nội dung",
+      "resource": "ai",
+      "foreground": false,
+      "metadata": {
+        "kind": "content_download"
+      },
+      "status": "completed",
+      "submitted_at": 1789020699.4519296,
+      "started_at": 1789020699.4519296,
+      "finished_at": 1789020726.8221545,
+      "error": ""
+    },
+    {
+      "id": "bfbd49c378604986",
+      "name": "Tải và phân tích nội dung",
+      "resource": "ai",
+      "foreground": false,
+      "metadata": {
+        "kind": "content_download"
+      },
+      "status": "completed",
+      "submitted_at": 1789020769.806451,
+      "started_at": 1789020769.806451,
+      "finished_at": 1789020799.5355997,
+      "error": ""
+    },
+    {
+      "id": "332a7fee38374fc5",
+      "name": "Tìm nguồn nội dung",
+      "resource": "network",
+      "foreground": false,
+      "metadata": {
+        "kind": "content_search"
+      },
+      "status": "completed",
+      "submitted_at": 1789026793.8521175,
+      "started_at": 1789026793.853126,
+      "finished_at": 1789026810.2775798,
+      "error": ""
+    },
+    {
+      "id": "98c2ba39ccac44b2",
+      "name": "Tải và phân tích nội dung",
+      "resource": "ai",
+      "foreground": false,
+      "metadata": {
+        "kind": "content_download"
+      },
+      "status": "completed",
+      "submitted_at": 1789027067.6367598,
+      "started_at": 1789027067.6377535,
+      "finished_at": 1789027098.4677615,
+      "error": ""
+    },
+    {
+      "id": "9f99b7a464724b58",
+      "name": "Tạo kịch bản kể chuyện",
+      "resource": "ai",
+      "foreground": true,
+      "metadata": {
+        "kind": "story_generate"
+      },
+      "status": "completed",
+      "submitted_at": 1789027116.973916,
+      "started_at": 1789027116.973916,
+      "finished_at": 1789029780.6269064,
+      "error": ""
+    },
+    {
+      "id": "1b3c99f234b2418c",
+      "name": "Làm video kể chuyện tự động",
+      "resource": "ffmpeg",
+      "foreground": true,
+      "metadata": {
+        "kind": "story_run_all"
+      },
+      "status": "completed",
+      "submitted_at": 1789029780.6093886,
+      "started_at": 1789029780.6108954,
+      "finished_at": 1789030968.5884483,
+      "error": ""
+    }
+  ]
+}

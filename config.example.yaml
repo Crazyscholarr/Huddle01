@@ -16,7 +16,7 @@ download:                          # Khi nhập LINK (Bilibili/YouTube...) thay 
   cookies_file: null               # hoặc đường dẫn file cookies.txt
 
 translation:
-  provider: "nvidia"                     # browser | gemini | nvidia | tokenrouter | tokenrouter_gemini | inferx
+  provider: "browser"                    # mặc định dùng Gemini Web local, không API key
   browser_channel: msedge          # msedge (Edge) | chrome | chromium
   browser_profile: browser_profile # Thư mục nhớ đăng nhập (đăng nhập Gemini 1 lần là xong)
   chunk_size: 15                   # TokenRouter free nen de 10-20; browser/Gemini co the tang cao hon
@@ -63,11 +63,16 @@ translation:
   inferx_timeout: 420
   # NVIDIA NIM (build.nvidia.com): key nvapi-... FREE, không cần thẻ, MỘT key
   # dùng chung cho mọi model trong catalog - đổi model chỉ cần sửa nvidia_model.
-  # GLM-5.2 dịch Trung-Việt tốt nhất nhóm free (đúng xưng hô, thuật ngữ tiên hiệp).
+  # MiniMax M3: endpoint free hiện hành cho dịch, phân tích và viết nội dung.
   nvidia_api_key: "YOUR_NVIDIA_API_KEY_HERE"
   nvidia_base_url: "https://integrate.api.nvidia.com/v1"
-  nvidia_model: "z-ai/glm-5.2"     # thử model khác: openai/gpt-oss-120b, stepfun-ai/step-3.7-flash...
+  nvidia_model: "minimaxai/minimax-m3"
   nvidia_timeout: 420
+  # ZenMux OpenAI-compatible; model free có thể đổi theo catalog ZenMux.
+  zenmux_api_key: ""
+  zenmux_base_url: "https://zenmux.ai/api/v1"
+  zenmux_model: "z-ai/glm-5.3-free"
+  zenmux_timeout: 420
   male_lead_name: ""               # De trong = khong ep ten nhan vat
   female_lead_name: ""             # De trong = khong ep ten nhan vat
   reuse_existing: true             # Có sẵn file .vi.srt thì dùng lại, khỏi dịch lại
@@ -75,6 +80,16 @@ translation:
                                     # TỰ dịch lại đúng dòng đó (tối đa 2 lần) ngay sau bước Dịch
                                     # và trước TTS/xuất video - khỏi phải bấm chạy lại bằng tay.
                                     # false = dừng và báo lỗi như trước.
+
+content_pipeline:                  # Kho truyện -> chấm điểm -> kế hoạch YouTube
+  database: "data/content_ideas.sqlite"
+  output_dir: "output/content_plans"
+  provider: browser                # browser | perplexity_browser | heuristic (không dùng API)
+  perplexity_model: "Claude Sonnet 5" # model chọn trong tài khoản Perplexity Pro
+  max_concurrency: 3               # Số truyện gọi API song song (1-8)
+  browser_json_retries: 1          # Gemini trả sai JSON: yêu cầu xuất lại trước khi dùng offline
+  min_words: 500
+  weekly_input: ""                # JSON/SQLite dùng khi chạy lịch hàng tuần
 
 asr:
   # paraformer      = FunASR Paraformer-large: TỐT NHẤT CHO TIẾNG TRUNG (CER ~1.7%
@@ -187,6 +202,9 @@ tao_kich_ban:
   python: null                      # null = dùng cùng Python đang chạy AutoDubVN
   timeout_minutes: 180              # 6 chương + kiểm tra có thể mất khá lâu
   require_quality_pass: true        # Chưa đủ từ/đối thoại hoặc có từ cấm thì chưa tốn TTS/render
+  quality_min_word_ratio: 0.95      # đạt >=95% mốc 12.000 vẫn dựng, tránh bỏ phí bản dài ~85 phút
+  quality_target_min_words: 12000
+  quality_target_max_words: 16000
 
 # Tạo ảnh cho luồng một nút: tiêu đề -> truyện -> prompt -> ảnh -> video.
 # Mặc định dùng Gemini Pro đã đăng nhập bằng login_gemini.bat: app tự chọn Tạo
@@ -196,13 +214,16 @@ tao_kich_ban:
 tao_anh:
   provider: browser
   auto_generate: true
-  scene_count: 14
+  scene_count: 8                      # 8 nhanh/cân bằng; đổi 14 nếu cần nhiều cảnh hơn
   browser_url: https://gemini.google.com/app
   browser_channel: msedge
   browser_profile: browser_profile
   wait_image_seconds: 90             # có nhịp báo mỗi 8 giây; kẹt thì dừng sớm
   wait_prompt_seconds: 180
   browser_retries: 2                 # lượt 2 tự mở chat sạch, không treo 12 phút
+  browser_fresh_chat_every: 2         # chủ động mở chat sạch sau 2 ảnh, tránh phiên Gemini bị chai
+  browser_session_restarts: 5         # tự đóng/mở lại trình duyệt rồi tiếp tục cảnh lỗi
+  browser_restart_cooldown_seconds: 10
   gemini_image_model: gemini-3.1-flash-lite-image
   timeout_seconds: 180
   max_retries: 3

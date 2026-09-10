@@ -2,6 +2,8 @@
 pyyaml
 edge-tts>=6.1.9
 requests>=2.25.0
+openpyxl>=3.1.5   # xuất kế hoạch sản xuất Excel nhiều sheet
+pandas>=2.2.0     # xử lý/lọc dữ liệu hàng loạt và tương thích workflow phân tích
 soundfile          # ghép timeline audio kiểu streaming cho video nhiều giờ
 yt-dlp            # tải video từ link (Bilibili/YouTube...)
 playwright        # dịch bằng cách điều khiển Edge vào Gemini (không cần API key)

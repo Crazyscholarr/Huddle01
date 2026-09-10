@@ -144,8 +144,9 @@ def log(msg: str, kind: str = "info") -> None:
 # Cờ này chạy tiến trình con ẩn hẳn đi.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 _RUN_LOCK = threading.RLock()
-_RUNNING_PROCS = set()
+_RUNNING_PROCS = {}
 _CANCEL_EVENT = None
+_CANCEL_EVENT_PROVIDER = None
 
 
 def _creationflags_for(cmd: List[str]) -> int:
@@ -162,9 +163,47 @@ def set_cancel_event(event) -> None:
     _CANCEL_EVENT = event
 
 
-def cancel_running_processes() -> None:
+def set_cancel_event_provider(provider) -> None:
+    """Register a job-aware event provider without coupling utils to server."""
+    global _CANCEL_EVENT_PROVIDER
+    _CANCEL_EVENT_PROVIDER = provider
+
+
+def active_cancel_event(resource: str = ""):
+    if _CANCEL_EVENT_PROVIDER is not None:
+        try:
+            event = _CANCEL_EVENT_PROVIDER(resource)
+            if event is not None:
+                return event
+        except TypeError:
+            try:
+                event = _CANCEL_EVENT_PROVIDER()
+                if event is not None:
+                    return event
+            except Exception:
+                pass
+        except Exception:
+            pass
+    return _CANCEL_EVENT
+
+
+def register_running_process(proc, cancel_event=None, resource: str = ""):
+    owner = cancel_event if cancel_event is not None else active_cancel_event(resource)
     with _RUN_LOCK:
-        procs = list(_RUNNING_PROCS)
+        _RUNNING_PROCS[proc] = owner
+    return owner
+
+
+def unregister_running_process(proc) -> None:
+    with _RUN_LOCK:
+        _RUNNING_PROCS.pop(proc, None)
+
+
+def cancel_running_processes(cancel_event=None) -> None:
+    """Terminate subprocesses owned by one job, or every process if omitted."""
+    with _RUN_LOCK:
+        procs = [proc for proc, owner in _RUNNING_PROCS.items()
+                 if cancel_event is None or owner is cancel_event]
     for proc in procs:
         try:
             if proc.poll() is None:
@@ -210,8 +249,13 @@ def run(cmd: List[str], check: bool = True, quiet: bool = True,
         errors='replace',
         creationflags=_creationflags_for(cmd),
     )
-    with _RUN_LOCK:
-        _RUNNING_PROCS.add(proc)
+    executable = os.path.basename(str(cmd[0])).lower() if cmd else ""
+    resource_hint = ("ffmpeg" if executable in {
+        "ffmpeg", "ffmpeg.exe", "ffprobe", "ffprobe.exe"
+    } else "network" if executable in {
+        "yt-dlp", "yt-dlp.exe", "aria2c", "aria2c.exe"
+    } else "")
+    owner_cancel_event = register_running_process(proc, resource=resource_hint)
     started = time.monotonic()
     last_activity = started
     try:
@@ -232,7 +276,7 @@ def run(cmd: List[str], check: bool = True, quiet: bool = True,
             chunks = []
             reader_finished = False
             while not reader_finished:
-                if _CANCEL_EVENT is not None and _CANCEL_EVENT.is_set():
+                if owner_cancel_event is not None and owner_cancel_event.is_set():
                     try:
                         proc.terminate()
                         proc.wait(timeout=2)
@@ -277,7 +321,7 @@ def run(cmd: List[str], check: bool = True, quiet: bool = True,
             stdout, stderr = "".join(chunks), ""
         else:
             while True:
-                if _CANCEL_EVENT is not None and _CANCEL_EVENT.is_set():
+                if owner_cancel_event is not None and owner_cancel_event.is_set():
                     try:
                         proc.terminate()
                         proc.wait(timeout=2)
@@ -309,9 +353,8 @@ def run(cmd: List[str], check: bool = True, quiet: bool = True,
                     continue
         res = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
     finally:
-        with _RUN_LOCK:
-            _RUNNING_PROCS.discard(proc)
-    if _CANCEL_EVENT is not None and _CANCEL_EVENT.is_set():
+        unregister_running_process(proc)
+    if owner_cancel_event is not None and owner_cancel_event.is_set():
         raise InterruptedError("Da huy lenh dang chay")
     if check and res.returncode != 0:
         err = (res.stderr or res.stdout or "")[-4000:]

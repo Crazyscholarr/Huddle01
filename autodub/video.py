@@ -5,8 +5,6 @@ from __future__ import annotations
 import math
 import os
 import re
-import subprocess
-import sys
 import tempfile
 import time
 import uuid
@@ -997,59 +995,50 @@ def render_final(
             run(rcmd, quiet=True, timeout=render_timeout)
             return
 
-        _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
         # Chạy FFmpeg với -progress pipe:1 để đọc tiến độ realtime
         rcmd_prog = rcmd[:1] + ["-progress", "pipe:1"] + rcmd[1:]
         t_render = time.monotonic()
         last_pct = -1
         loi_ffmpeg = None
+        err_tail = []
+
+        def _render_line(raw: str) -> None:
+            nonlocal last_pct
+            line = str(raw or "").strip()
+            if line.startswith("out_time_us="):
+                try:
+                    us = int(line.split("=", 1)[1])
+                    pct = min(100, int(us / (src_dur * 1_000_000) * 100))
+                    if pct >= last_pct + 5:
+                        elapsed = time.monotonic() - t_render
+                        if pct > 0:
+                            eta = elapsed / pct * (100 - pct)
+                            log(f"  Render: {pct}% | đã {elapsed:.0f}s | còn ~{eta:.0f}s", "info")
+                        else:
+                            log(f"  Render: {pct}% | đã {elapsed:.0f}s", "info")
+                        last_pct = pct
+                except (ValueError, ZeroDivisionError):
+                    pass
+            elif line:
+                err_tail.append(line)
+                del err_tail[:-80]
+
         try:
-            proc = subprocess.Popen(
-                rcmd_prog,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                creationflags=_NO_WINDOW,
-            )
-            err_tail = []
-            for line in proc.stdout:
-                line = line.strip()
-                if line.startswith("out_time_us="):
-                    try:
-                        us = int(line.split("=", 1)[1])
-                        pct = min(100, int(us / (src_dur * 1_000_000) * 100))
-                        if pct >= last_pct + 5:  # in mỗi 5%
-                            elapsed = time.monotonic() - t_render
-                            if pct > 0:
-                                eta = elapsed / pct * (100 - pct)
-                                log(f"  Render: {pct}% | đã {elapsed:.0f}s | còn ~{eta:.0f}s", "info")
-                            else:
-                                log(f"  Render: {pct}% | đã {elapsed:.0f}s", "info")
-                            last_pct = pct
-                    except (ValueError, ZeroDivisionError):
-                        pass
-                elif line:
-                    err_tail.append(line)
-                    err_tail = err_tail[-80:]
-            proc.wait(timeout=7200)
-            if proc.returncode != 0:
+            result = run(rcmd_prog, check=False, quiet=True,
+                         timeout=render_timeout, line_callback=_render_line)
+            if result.returncode != 0:
                 err = "\n".join(err_tail)[-2000:]
                 # Ghi lại rồi ném ở NGOÀI khối try: ném ngay tại đây sẽ rơi
                 # vào nhánh except bên dưới và render lại lần nữa cho một lệnh
                 # đã biết chắc là hỏng.
                 loi_ffmpeg = RuntimeError(
-                    f"FFmpeg render lỗi ({proc.returncode}):\n{err}")
+                    f"FFmpeg render lỗi ({result.returncode}):\n{err}")
+        except InterruptedError:
+            raise
         except FileNotFoundError:
             raise
         except Exception:
             # Fallback: lỗi pipe hoặc timeout -> chạy lại bình thường
-            try:
-                proc.kill()
-            except Exception:
-                pass
             run(rcmd, quiet=True, timeout=render_timeout)
 
         if loi_ffmpeg is not None:

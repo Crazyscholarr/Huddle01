@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import os
 import re
-import threading
 import time
 from typing import Dict, List, Tuple
 
 from .config_api import _load_cfg
-from .state import (HERE, STATE, _LOCK, _CANCEL_EVENT, _log, _progress)
+from .state import (HERE, STATE, _LOCK, current_cancel_event, submit_job,
+                    _log, _progress)
 
 
 JsonResult = Tuple[Dict, int]
@@ -72,7 +72,6 @@ def _begin(kind: str, total: int, output_dir: str) -> JsonResult | None:
         tools = STATE["video_tools"]
         if STATE["running"] or STATE["busy"] or tools.get("working"):
             return {"error": "Đang bận: " + (STATE["busy"] or "đang xử lý")}, 409
-        _CANCEL_EVENT.clear()
         STATE["cancel"] = False
         STATE["running"] = True
         STATE["busy"] = ("Đang tải video nền cho Audio…" if kind == "download"
@@ -184,7 +183,7 @@ def api_download_videos(b: Dict) -> JsonResult:
                       detail=f"{len(files)} file sẵn sàng")
             _log(f"Công cụ tải video Audio hoàn tất: {len(files)} file.", "ok")
         except Exception as exc:
-            cancelled = _CANCEL_EVENT.is_set()
+            cancelled = current_cancel_event().is_set()
             message = ("Đã dừng tải; file hoàn tất vẫn được giữ lại."
                        if cancelled else f"Tải video Audio lỗi: {exc}")
             _update(download_status=message, error="" if cancelled else str(exc)[:300])
@@ -192,7 +191,8 @@ def api_download_videos(b: Dict) -> JsonResult:
         finally:
             _end()
 
-    threading.Thread(target=_work, daemon=True).start()
+    submit_job(_work, name="Tải video cho công cụ Audio", resource="network",
+               metadata={"kind": "video_tools_download"})
     return {"ok": True, "async": True, "total": len(links),
             "output_dir": out_dir}, 200
 
@@ -240,7 +240,7 @@ def api_cut_videos(b: Dict) -> JsonResult:
                       detail=f"{len(clips)} clip sẵn sàng")
             _log(f"Công cụ cắt hàng loạt hoàn tất: {len(clips)} clip.", "ok")
         except Exception as exc:
-            cancelled = _CANCEL_EVENT.is_set()
+            cancelled = current_cancel_event().is_set()
             partial = story_sources._video_files([target])
             message = (f"Đã dừng cắt; giữ lại {len(partial)} clip đã tạo."
                        if cancelled else f"Cắt video hàng loạt lỗi: {exc}")
@@ -250,6 +250,7 @@ def api_cut_videos(b: Dict) -> JsonResult:
         finally:
             _end()
 
-    threading.Thread(target=_work, daemon=True).start()
+    submit_job(_work, name="Cắt video hàng loạt", resource="ffmpeg",
+               metadata={"kind": "video_tools_cut"})
     return {"ok": True, "async": True, "total": len(sources),
             "output_dir": out_dir}, 200
