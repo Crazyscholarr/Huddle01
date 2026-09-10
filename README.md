@@ -1,6 +1,6 @@
 # AutoDubVN — Tự động lồng tiếng Việt cho video
 
-Đưa **1 video bất kỳ (kể cả tiếng Trung)** vào → nhận về **video nói tiếng Việt**, chạy **offline** trên máy bạn (i5‑13400F + RTX 3060). Pipeline:
+Đưa **1 video bất kỳ (kể cả tiếng Trung)** vào → nhận về **video nói tiếng Việt**, chạy **offline** trên máy bạn. Pipeline:
 
 > Tách audio → **nhận phụ đề (ASR)** → *(tùy chọn tách nhân vật)* → **dịch sang tiếng Việt (Gemini)** → **tổng hợp giọng nói + chống đè thoại** → **che sub gốc (blur) + render (NVENC)**.
 
